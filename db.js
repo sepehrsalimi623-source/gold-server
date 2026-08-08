@@ -1,91 +1,71 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
-
-// Connect to SQLite database
-const dbPath = path.resolve(__dirname, 'database.sqlite');
-const db = new sqlite3.Database(dbPath, (err) => {
-  if (err) {
-    console.error('Error connecting to the database:', err.message);
-  } else {
-    console.log('Connected to the SQLite database.');
-  }
-});
-
-// Initialize database tables
-const initDB = () => {
-  db.serialize(() => {
-    // Users Table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT,
-        phone_number TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    // Wallets Table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS wallets (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        currency TEXT NOT NULL CHECK(currency IN ('USDT', 'IRT')),
-        balance REAL DEFAULT 0,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-      )
-    `);
-
-    // Transactions Table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS transactions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        wallet_id INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('deposit', 'withdraw', 'trade_profit', 'trade_loss', 'fee')),
-        amount REAL NOT NULL,
-        description TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (wallet_id) REFERENCES wallets(id)
-      )
-    `);
-
-    // Trades Table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS trades (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('buy', 'sell')),
-        amount REAL NOT NULL,
-        entry_price REAL NOT NULL,
-        close_price REAL,
-        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'closed')),
-        profit REAL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        closed_at DATETIME,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-      )
-    `);
-    
-    // Payment Methods (Cards & Crypto)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS payment_methods (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        type TEXT NOT NULL CHECK(type IN ('bank_card', 'crypto')),
-        card_number TEXT NOT NULL,
-        cvv2 TEXT,
-        expiry_date TEXT,
-        owner_name TEXT,
-        national_id TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (user_id) REFERENCES users(id)
-      )
-    `);
-    
+class InMemoryDB {
+  constructor() {
+    this.tables = { users: [], wallets: [], payment_methods: [] };
+    this.autoIncrement = { users: 0, wallets: 0, payment_methods: 0 };
     console.log('Database tables initialized successfully.');
-  });
-};
-
-initDB();
-
+  }
+  run(sql, params = [], callback) {
+    try {
+      const sqlLower = sql.trim().toLowerCase();
+      if (sqlLower.startsWith('create table')) { if (callback) callback.call({ lastID: 0 }, null); return; }
+      if (sqlLower.startsWith('insert into')) {
+        const tableMatch = sql.match(/insert into (\w+)/i);
+        if (!tableMatch) { if (callback) callback.call({}, new Error('Invalid INSERT')); return; }
+        const table = tableMatch[1];
+        const colMatch = sql.match(/\(([^)]+)\)\s+values\s+\(([^)]+)\)/i);
+        if (!colMatch) { if (callback) callback.call({}, new Error('Invalid INSERT syntax')); return; }
+        const columns = colMatch[1].split(',').map(c => c.trim());
+        const valueParts = colMatch[2].split(',').map(v => v.trim());
+        const row = { id: ++this.autoIncrement[table] };
+        let pi = 0;
+        columns.forEach((col, i) => { row[col] = valueParts[i] === '?' ? params[pi++] : valueParts[i].replace(/'/g, ''); });
+        if (table === 'users' && this.tables.users.find(u => u.phone_number === row.phone_number)) {
+          if (callback) callback.call({}, new Error('UNIQUE constraint failed: users.phone_number')); return;
+        }
+        if (!this.tables[table]) this.tables[table] = [];
+        this.tables[table].push(row);
+        if (callback) callback.call({ lastID: row.id }, null); return;
+      }
+      if (sqlLower.startsWith('update')) {
+        const tableMatch = sql.match(/update (\w+)\s+set/i);
+        const setMatch = sql.match(/set\s+(\w+)\s*=\s*\?/i);
+        const whereMatch = sql.match(/where\s+(\w+)\s*=\s*\?/i);
+        if (tableMatch && setMatch && whereMatch) {
+          const row = this.tables[tableMatch[1]].find(r => String(r[whereMatch[1]]) === String(params[1]));
+          if (row) row[setMatch[1]] = params[0];
+        }
+        if (callback) callback.call({}, null); return;
+      }
+      if (sqlLower.startsWith('delete')) {
+        const tableMatch = sql.match(/from\s+(\w+)/i);
+        const whereMatch = sql.match(/where\s+(\w+)\s*=\s*\?/i);
+        if (tableMatch && whereMatch) {
+          this.tables[tableMatch[1]] = this.tables[tableMatch[1]].filter(r => String(r[whereMatch[1]]) !== String(params[0]));
+        }
+        if (callback) callback.call({}, null); return;
+      }
+      if (callback) callback.call({}, null);
+    } catch (err) { if (callback) callback.call({}, err); }
+  }
+  get(sql, params = [], callback) {
+    try {
+      if (sql.toLowerCase().includes('join')) { callback(null, this.tables.users.find(u => u.phone_number === params[0]) || null); return; }
+      const tableMatch = sql.match(/from\s+(\w+)/i);
+      if (!tableMatch) { callback(new Error('Invalid SELECT'), null); return; }
+      const whereMatch = sql.match(/where\s+(?:\w+\.)?(\w+)\s*=\s*\?/i);
+      if (whereMatch) { callback(null, this.tables[tableMatch[1]].find(r => String(r[whereMatch[1]]) === String(params[0])) || null); }
+      else { callback(null, this.tables[tableMatch[1]][0] || null); }
+    } catch (err) { callback(err, null); }
+  }
+  all(sql, params = [], callback) {
+    try {
+      const tableMatch = sql.match(/from\s+(\w+)/i);
+      if (!tableMatch) { callback(new Error('Invalid SELECT'), []); return; }
+      const whereMatch = sql.match(/where\s+(?:\w+\.)?(\w+)\s*=\s*\?/i);
+      if (whereMatch) { callback(null, (this.tables[tableMatch[1]] || []).filter(r => String(r[whereMatch[1]]) === String(params[0]))); }
+      else { callback(null, this.tables[tableMatch[1]] || []); }
+    } catch (err) { callback(err, []); }
+  }
+}
+const db = new InMemoryDB();
 module.exports = db;
