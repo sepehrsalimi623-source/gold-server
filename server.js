@@ -91,7 +91,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
   const { phone_number, national_id, new_password } = req.body;
 
   if (!phone_number || !national_id || !new_password) {
-    return res.status(400).json({ error: 'شماره موبایل، کد ملی و رمز عبور جدید الزامی است.' });
+    return res.status(400).json({ error: 'شماره موبایل، کدملی و رمز عبور جدید الزامی است.' });
   }
 
   try {
@@ -110,14 +110,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       // Let's check if user exists at all:
       db.get(`SELECT id FROM users WHERE phone_number = ?`, [phone_number], async (userErr, userRow) => {
         if (userErr) return res.status(500).json({ error: 'خطای سرور.' });
-        if (!userRow) return res.status(400).json({ error: 'حسابی با این شماره موبایل یافت نشد.' });
+        if (!userRow) return res.status(400).json({ error: 'کاربری با این مشخصات یافت نشد.' });
 
         const salt = await bcrypt.genSalt(10);
         const hashedPassword = await bcrypt.hash(new_password, salt);
 
         db.run(`UPDATE users SET password = ? WHERE id = ?`, [hashedPassword, userRow.id], (updateErr) => {
           if (updateErr) return res.status(500).json({ error: 'خطای سرور.' });
-          res.json({ message: 'رمز عبور با موفقیت تغییر کرد. لطفاً وارد شوید.' });
+          res.json({ message: 'رمز عبور با موفقیت تغییر کرد. لطفا وارد شوید.' });
         });
       });
     });
@@ -131,7 +131,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 // Middleware to authenticate
 const authenticate = (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'دسترسی غیرمجاز.' });
+  if (!token) return res.status(401).json({ error: 'احرازهویت نامعتبر.' });
 
   jwt.verify(token, JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: 'توکن نامعتبر است.' });
